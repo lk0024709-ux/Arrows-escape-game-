@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "com.arrows.escape"
-    compileSdk = flutter.compileSdkVersion
+    // Keep these values explicit so the project can also be opened directly
+    // in Android Studio. Flutter 3.19's stable toolchain supports API 34.
+    compileSdk = 34
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -22,7 +24,7 @@ android {
         applicationId = "com.arrows.escape"
         // minSdk 21 keeps the widest practical device coverage.
         minSdk = 21
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 34
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
