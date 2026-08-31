@@ -1,255 +1,183 @@
-import 'dart:math';
+import 'package:flutter/material.dart';
 
-import 'package:Arrows-escape-game-/lib/geometry/arrow_path.dart';
-import 'package:Arrows-escape-game-/lib/level/level.dart';
-import 'package:Arrows-escape-game-/lib/level/level_generator.dart';
-import 'package:Arrows-escape-game-/lib/level/level_solver.dart';
+import '../geometry/arrow_path.dart';
+import '../level/difficulty.dart';
+import '../level/level.dart';
+import '../level/level_generator.dart';
+import '../level/level_solver.dart';
 
-enum DifficultyLevel { easy, normal, medium, hard, expert }
+/// A board plus the move count that belonged to it, so undo restores both.
+class _Snapshot {
+  final Level level;
+  final int moveCount;
 
+  const _Snapshot(this.level, this.moveCount);
+}
+
+/// Owns the run: current board, selection, moves, lives and undo history.
 class GameManager {
+  static const int startingLives = 3;
+
   DifficultyLevel _currentDifficulty = DifficultyLevel.normal;
   int _currentSeed = DateTime.now().millisecondsSinceEpoch;
   int _moveCount = 0;
-  int _lives = 3;
+  int _lives = startingLives;
   Level? _currentLevel;
   ArrowPath? _selectedArrow;
-  final List<ArrowPath> _history = [];
-  final LevelGenerator _generator = LevelGenerator();
-  final LevelSolver _solver = LevelSolver();
+  String? _hintArrowId;
+
+  final List<_Snapshot> _history = [];
+  final LevelGenerator _generator;
+
+  GameManager({LevelGenerator? generator})
+      : _generator = generator ?? LevelGenerator() {
+    _resetMoveCount();
+  }
 
   int get moveCount => _moveCount;
   int get lives => _lives;
+  bool get isGameOver => _lives <= 0;
   DifficultyLevel get currentDifficulty => _currentDifficulty;
   int get currentSeed => _currentSeed;
   Level? get currentLevel => _currentLevel;
   ArrowPath? get selectedArrow => _selectedArrow;
-
-  GameManager() {
-    _resetMoveCount();
-  }
+  String? get hintArrowId => _hintArrowId;
+  bool get canUndo => _history.isNotEmpty;
 
   void _resetMoveCount() {
     _moveCount = 0;
     _history.clear();
+    _hintArrowId = null;
   }
 
   void setLevel(Level level) {
     _currentLevel = level;
     _selectedArrow = null;
+    _hintArrowId = null;
     _moveCount = 0;
     _history.clear();
-    _lives = 3;
+    _lives = startingLives;
+  }
+
+  /// Start a fresh board on [difficulty].
+  void startLevel(DifficultyLevel difficulty) {
+    _currentDifficulty = difficulty;
+    _currentSeed = DateTime.now().millisecondsSinceEpoch;
+    setLevel(_generator.generate(difficulty: difficulty, seed: _currentSeed));
   }
 
   void nextDifficulty() {
-    switch (_currentDifficulty) {
-      case DifficultyLevel.easy:
-        _currentDifficulty = DifficultyLevel.normal;
-        break;
-      case DifficultyLevel.normal:
-        _currentDifficulty = DifficultyLevel.medium;
-        break;
-      case DifficultyLevel.medium:
-        _currentDifficulty = DifficultyLevel.hard;
-        break;
-      case DifficultyLevel.hard:
-        _currentDifficulty = DifficultyLevel.expert;
-        break;
-      case DifficultyLevel.expert:
-        _currentDifficulty = DifficultyLevel.easy;
-        break;
-    }
-    _currentSeed = DateTime.now().millisecondsSinceEpoch;
-    setLevel(Level(generatorSeed: _currentSeed, difficulty: _currentDifficulty));
+    final values = DifficultyLevel.values;
+    final next = values[(_currentDifficulty.index + 1) % values.length];
+    startLevel(next);
   }
 
   void prevDifficulty() {
-    switch (_currentDifficulty) {
-      case DifficultyLevel.easy:
-        _currentDifficulty = DifficultyLevel.expert;
-        break;
-      case DifficultyLevel.normal:
-        _currentDifficulty = DifficultyLevel.easy;
-        break;
-      case DifficultyLevel.medium:
-        _currentDifficulty = DifficultyLevel.normal;
-        break;
-      case DifficultyLevel.hard:
-        _currentDifficulty = DifficultyLevel.medium;
-        break;
-      case DifficultyLevel.expert:
-        _currentDifficulty = DifficultyLevel.hard;
-        break;
-    }
-    _currentSeed = DateTime.now().millisecondsSinceEpoch;
-    setLevel(Level(generatorSeed: _currentSeed, difficulty: _currentDifficulty));
+    final values = DifficultyLevel.values;
+    final prev = values[(_currentDifficulty.index - 1 + values.length) % values.length];
+    startLevel(prev);
   }
 
+  /// Rebuild the board for the same difficulty with a new seed.
   void regenerateLevel() {
-    // Regenerate level with same seed but possibly different parameters
-    if (_currentLevel != null) {
-      final level = _generator.generate(
-        difficulty: _currentDifficulty,
-        seed: _currentSeed,
-      );
-      setLevel(level);
-    }
+    startLevel(_currentDifficulty);
   }
 
   void onArrowSelected(ArrowPath arrow) {
-    // Record state before selection for undo
-    if (_currentLevel != null) {
-      _history.add(_currentLevel!.copyWithSelectedArrow(null));
+    if (_currentLevel == null || isGameOver) return;
+    if (_currentLevel!.getArrowById(arrow.id) == null) {
+      // Tapped empty space: clear the selection without spending a move.
+      _selectedArrow = null;
+      return;
     }
+
+    // Record state before selection for undo
+    _history.add(_Snapshot(_currentLevel!.copyWithSelectedArrow(null), _moveCount));
     _selectedArrow = arrow;
+    _currentLevel!.setSelectedArrowIndex(_currentLevel!.arrows.indexOf(arrow));
     // Increment move count when player actively selects an arrow
     _moveCount++;
+    _hintArrowId = null;
   }
 
   void onArrowReleased(ArrowPath arrow) {
-    if (_selectedArrow == arrow) {
+    if (_selectedArrow?.id == arrow.id) {
       _executeArrow(arrow);
       _selectedArrow = null;
     }
   }
 
   void _executeArrow(ArrowPath arrow) {
-    // Check if arrow can escape using the physics/validator
-    final canEscape = _checkEscapeCorridor(arrow);
+    final level = _currentLevel;
+    if (level == null) return;
 
-    if (canEscape) {
-      // Animate arrow escaping (in full implementation)
+    if (_checkEscapeCorridor(arrow)) {
       arrow.isEscaping = true;
-      // Remove arrow from board
-      if (_currentLevel != null) {
-        _currentLevel!.removeArrow(arrow);
-      }
-      // Check if level is complete
-      if (_currentLevel?.isLevelComplete ?? false) {
-        // Level completed - move to next difficulty
+      level.removeArrow(arrow);
+      _currentLevel = level;
+      _selectedArrow = null;
+      _hintArrowId = null;
+
+      if (level.isLevelComplete) {
+        // Level completed - move on to the next difficulty.
         nextDifficulty();
-        setLevel(_generator.generate(
-          difficulty: _currentDifficulty,
-          seed: _currentSeed,
-        ));
-      } else {
-        setLevel(_currentLevel!);
       }
     } else {
       // Arrow blocked - apply penalty (lose life)
       _lives--;
       _selectedArrow = null;
-      if (_lives <= 0) {
-        // Game over - could show dialog
-      }
+      level.clearSelectedArrow();
     }
   }
 
+  /// An arrow escapes when nothing sits in its forward corridor.
   bool _checkEscapeCorridor(ArrowPath arrow) {
-    // Check if the arrow's forward escape corridor is clear
-    final dir = arrow.direction;
-    final endpoint = arrow.endpoint;
-
-    // Safety margin: > 2.5 * thickness
-    final safetyMargin = 2.5 * arrow.thickness;
-
-    for (final otherArrow in _currentLevel?.arrows ?? []) {
-      if (otherArrow.id == arrow.id) continue;
-
-      // Check if other arrow blocks the escape corridor
-      if (_isBlockedBy(otherArrow, dir, endpoint, safetyMargin)) {
-        return false;
-      }
-    }
-
-    // Check boundaries (status bar, top controls, bottom tools, ad container)
-    if (_isBlockedByBoardBoundary(arrow)) {
-      return false;
-    }
-
-    return true;
+    final level = _currentLevel;
+    if (level == null) return false;
+    if (_isBlockedByBoardBoundary(arrow)) return false;
+    return LevelSolver(level: level).canEscape(arrow);
   }
 
-  bool _isBlockedBy(ArrowPath other, Direction dir, GridPoint endpoint, double margin) {
-    // Check if another arrow blocks the escape corridor
-    for (final point in other.points) {
-      final dx = point.x - endpoint.x;
-      final dy = point.y - endpoint.y;
-
-      bool inFront = false;
-      switch (dir) {
-        case Direction.right:
-          inFront = dx > 0;
-          break;
-        case Direction.left:
-          inFront = dx < 0;
-          break;
-        case Direction.up:
-          inFront = dy < 0;
-          break;
-        case Direction.down:
-          inFront = dy > 0;
-          break;
-      }
-
-      if (inFront) {
-        final distance = sqrt(dx * dx + dy * dy);
-        if (distance < margin) return true;
-      }
-    }
-    return false;
-  }
-
+  /// Arrows may not escape through the status bar, top controls, bottom tools
+  /// or the ad container. The board grid already stops one cell short of those
+  /// chrome areas, so an arrow whose head is still inside the grid always has
+  /// somewhere to run; only an arrow parked outside the grid is rejected.
   bool _isBlockedByBoardBoundary(ArrowPath arrow) {
-    // Check if arrow's escape corridor touches status bar, controls, etc.
-    // In the reference composition, arrows should not touch:
-    // * status bar
-    // * top controls
-    // * bottom tools
-    // * ad container
-
-    final dir = arrow.direction;
-    final endpoint = arrow.endpoint;
-
-    // Check if arrow would escape through a forbidden area
-    // This is a simplified check - full implementation would consider board layout
-    return false;
+    final grid = _currentLevel?.grid;
+    if (grid == null) return true;
+    return !grid.inBoundsPoint(arrow.endpoint);
   }
 
   void undo() {
     if (_history.isEmpty) return;
 
-    final previousState = _history.removeLast();
-    _currentLevel = previousState;
-    _moveCount = _history.length;
+    final previous = _history.removeLast();
+    _currentLevel = previous.level;
+    _moveCount = previous.moveCount;
     _selectedArrow = null;
+    _hintArrowId = null;
   }
 
+  /// Picks an arrow that can escape right now and marks it as the hint.
   void showHint() {
-    if (_currentLevel != null) {
-      final solver = LevelSolver(level: _currentLevel!);
-      final solution = solver.solve();
-      if (solution.isNotEmpty) {
-        // Highlight the first recommended arrow
-        final recommendedArrow = solution.first;
-        // In a full implementation, this would trigger a visual highlight
-        // and optionally show a path preview
-      }
-    }
+    final level = _currentLevel;
+    if (level == null) return;
+
+    final solution = LevelSolver(level: level).solve();
+    if (solution.isEmpty) return;
+
+    _hintArrowId = solution.first.id;
   }
 
   /// Get available arrows that can be selected and potentially escaped
   List<ArrowPath> getAvailableArrows() {
-    if (_currentLevel == null) return [];
-    return _currentLevel!.getAvailableArrows();
+    final level = _currentLevel;
+    if (level == null) return [];
+    return level.getAvailableArrows();
   }
 
   /// Get the quality score for the current level
-  int getQualityScore() {
-    if (_currentLevel == null) return 0;
-    return _currentLevel!.qualityScore;
-  }
+  int getQualityScore() => _currentLevel?.qualityScore ?? 0;
 
   /// Get the current difficulty classification
   String getDifficultyClassification() {
@@ -261,5 +189,23 @@ class GameManager {
     if (arrowCount <= 26 && score < 70) return 'Medium';
     if (arrowCount <= 35 && score < 85) return 'Hard';
     return 'Expert';
+  }
+
+  /// Badge colour matching [getDifficultyClassification].
+  Color getDifficultyColor(String difficulty) {
+    switch (difficulty) {
+      case 'Easy':
+        return Colors.green.shade100;
+      case 'Normal':
+        return Colors.blue.shade100;
+      case 'Medium':
+        return Colors.orange.shade100;
+      case 'Hard':
+        return Colors.red.shade100;
+      case 'Expert':
+        return Colors.purple.shade100;
+      default:
+        return Colors.grey.shade200;
+    }
   }
 }

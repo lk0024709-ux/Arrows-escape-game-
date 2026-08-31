@@ -1,14 +1,20 @@
+import 'dart:ui';
+
 /// Logical grid point for the construction system.
 /// These are the invisible nodes that paths are built upon.
 class GridPoint {
   final int x;
   final int y;
 
-  GridPoint(this.x, this.y);
+  const GridPoint(this.x, this.y);
 
+  /// Centre of this cell in pixel space for a given cell size.
   Offset toOffset(double cellSize) {
     return Offset(x * cellSize + cellSize / 2, y * cellSize + cellSize / 2);
   }
+
+  /// A point shifted by [dx]/[dy] cells.
+  GridPoint translate(int dx, int dy) => GridPoint(x + dx, y + dy);
 
   @override
   bool operator ==(Object other) {

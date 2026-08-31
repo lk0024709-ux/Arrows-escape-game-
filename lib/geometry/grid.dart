@@ -1,3 +1,7 @@
+import 'dart:ui';
+
+import 'grid_point.dart';
+
 /// Invisible logical construction grid.
 /// Used for alignment, spacing, collision detection, and path generation.
 /// Should normally be invisible to the player, but can be shown in debug mode.
@@ -28,6 +32,8 @@ class Grid {
     return x >= 0 && x < width && y >= 0 && y < height;
   }
 
+  bool inBoundsPoint(GridPoint point) => inBounds(point.x, point.y);
+
   /// Get neighboring grid points in orthogonal directions
   List<GridPoint> getNeighbors(GridPoint point) {
     final neighbors = <GridPoint>[];
@@ -48,17 +54,25 @@ class Grid {
 
   /// Get offset for a grid point (for rendering)
   Offset offsetFor(GridPoint point) {
-    return Offset(point.x * cellSize + cellSize / 2, point.y * cellSize + cellSize / 2);
+    return Offset(
+      point.x * cellSize + cellSize / 2,
+      point.y * cellSize + cellSize / 2,
+    );
   }
 
   /// Get grid point from screen coordinates
   GridPoint? pointFromOffset(Offset offset) {
-    final x = (offset.dx / cellSize).round();
-    final y = (offset.dy / cellSize).round();
+    final x = ((offset.dx - cellSize / 2) / cellSize).round();
+    final y = ((offset.dy - cellSize / 2) / cellSize).round();
     if (inBounds(x, y)) {
       return GridPoint(x, y);
     }
     return null;
+  }
+
+  /// Same grid with a different pixel cell size (used when the board resizes).
+  Grid withCellSize(double newCellSize) {
+    return Grid(width: width, height: height, cellSize: newCellSize);
   }
 
   @override

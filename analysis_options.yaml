@@ -1,0 +1,12 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - build/**
+
+linter:
+  rules:
+    # The board is drawn on a CustomPaint canvas, so widget-tree lints about
+    # const widget subtrees add noise without buying anything here.
+    prefer_const_constructors: false
+    prefer_const_literals_to_create_immutables: false
