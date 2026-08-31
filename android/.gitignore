@@ -1,8 +1,11 @@
 gradle-wrapper.jar
 /.gradle
 /captures/
+# The wrapper launchers are checked in; only generated Gradle state is ignored.
 /gradlew
 /gradlew.bat
+!/gradlew
+!/gradlew.bat
 /local.properties
 GeneratedPluginRegistrant.java
 

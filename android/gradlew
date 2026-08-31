@@ -1,0 +1,39 @@
+#!/bin/sh
+
+# Lightweight Gradle wrapper bootstrap. The generated Flutter project keeps the
+# Gradle distribution out of source control while still allowing CI and local
+# builds to run with one command.
+set -eu
+
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+GRADLE_VERSION=8.3
+DIST_DIR="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/gradle-${GRADLE_VERSION}-bin"
+GRADLE_BIN=""
+
+if command -v gradle >/dev/null 2>&1; then
+  GRADLE_BIN=$(command -v gradle)
+else
+  GRADLE_BIN=$(find "$DIST_DIR" -type f -path '*/bin/gradle' -print -quit 2>/dev/null || true)
+  if [ -z "$GRADLE_BIN" ]; then
+    CACHE_DIR="$DIST_DIR/gradle-${GRADLE_VERSION}"
+    ARCHIVE="${TMPDIR:-/tmp}/gradle-${GRADLE_VERSION}-bin.zip"
+    mkdir -p "$DIST_DIR"
+    if command -v curl >/dev/null 2>&1; then
+      curl --fail --location --silent --show-error \
+        "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+        --output "$ARCHIVE"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q --show-progress \
+        "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+        -O "$ARCHIVE"
+    else
+      echo "Gradle is not installed and neither curl nor wget is available." >&2
+      exit 1
+    fi
+    rm -rf "$CACHE_DIR"
+    unzip -q "$ARCHIVE" -d "$DIST_DIR"
+    GRADLE_BIN="$CACHE_DIR/bin/gradle"
+  fi
+fi
+
+exec "$GRADLE_BIN" "$@"
