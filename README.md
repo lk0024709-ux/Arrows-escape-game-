@@ -76,3 +76,47 @@ This automatically generates standard and adaptive launcher icons across Android
    ```bash
    flutter run
    ```
+
+---
+
+## Game Screen Architecture
+
+The playable screen now lives in `lib/screens/game/game_screen.dart` and is
+launched from `lib/main.dart`. It owns the run end-to-end:
+
+- **Top bar** — level indicator (`Level N`, `GOD Level N` for level > 100,
+  `BOSS Level N` for level > 200), a `LivesBar`, and a back button.
+- **God / Boss timers** — a visible count-down chip appears for God and Boss
+  levels; when it expires the player loses a life (`GameManager.loseLife`).
+- **Board** — wrapped in an `InteractiveViewer` so the player can pinch-to-zoom
+  and pan the grid.
+- **Bottom UI** — an animated `WavyProgressBar` (clear progress), the tool row
+  (Hint / Undo / New board) and a `UnifiedBannerAd` slot.
+- **Event bridge** — `onLevelComplete`, `onGameOver`, `onLifeLost` and
+  `onDeadlock` callbacks let the shell react to `GameState` changes.
+
+Supporting pieces:
+
+- `lib/core/audio_manager.dart` — fail-safe sound cache; every asset load is
+  wrapped in try/catch so a missing/zero-byte file (e.g. `underwater.mp3`,
+  `swoosh_18.mp3`) can never crash startup.
+- `lib/core/app_font.dart` — loads a bundled font from `assets/fonts/` or falls
+  back to the platform default (a `google_fonts` fallback would slot in here).
+- `lib/core/ad_secrets.dart` — copied from `ad_secrets_example.dart`; the
+  banner layer reads it.
+- `lib/data/repositories/level_repository.dart` — `getLevelAsync` applies a
+  safety `timeout` and a guaranteed generated fallback so level loading can
+  never hang.
+
+### Note on Flame / AdMob / audio plugins
+
+This checkout builds with Flutter's built-in APIs only (no third-party
+packages beyond `cupertino_icons`), and in this sandbox the Flutter SDK and
+`pub.dev` are unreachable. The requested architecture was therefore implemented
+with **dependency-free equivalents**: the native `GameBoard` (CustomPainter)
+stands in for the Flame `GameWidget`, the `UnifiedBannerAd` degrades to a safe
+no-op slot when `AdSecrets.adsEnabled` is false, the `AudioManager` exposes a
+load/play API that an audio plugin can be wired into, and `AppFont` provides
+the graceful font fallback. Flipping these to Flame / `google_mobile_ads` /
+`google_fonts` / an audio player in a fully-provisioned build is a drop-in
+change isolated to those small files.

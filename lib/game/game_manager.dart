@@ -118,10 +118,9 @@ class GameManager {
       _selectedArrow = null;
       _hintArrowId = null;
 
-      if (level.isLevelComplete) {
-        // Level completed - move on to the next difficulty.
-        nextDifficulty();
-      }
+      // The screen observes the emptied board and decides when to advance to
+      // the next level, so progression (level number, God/Boss tiers) stays in
+      // one place instead of being hard-wired to a difficulty bump here.
     } else {
       // Arrow blocked - apply penalty (lose life)
       _lives--;
@@ -146,6 +145,12 @@ class GameManager {
     final grid = _currentLevel?.grid;
     if (grid == null) return true;
     return !grid.inBoundsPoint(arrow.endpoint);
+  }
+
+  /// Lose a single life without an arrow, e.g. when a God/Boss level timer
+  /// expires. Clamped at zero so it can never go negative.
+  void loseLife() {
+    if (_lives > 0) _lives--;
   }
 
   void undo() {
