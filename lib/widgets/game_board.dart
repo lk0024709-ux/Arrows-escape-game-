@@ -1,8 +1,12 @@
-import 'package:flutter/material.dart';
-import 'geometry/arrow_path.dart';
-import 'level/level.dart';
-import 'rendering/arrow_painter.dart';
+import 'dart:math';
 
+import 'package:arrows_escape_game/geometry/arrow_path.dart';
+import 'package:arrows_escape_game/geometry/grid.dart';
+import 'package:arrows_escape_game/geometry/grid_point.dart';
+import 'package:arrows_escape_game/rendering/arrow_painter.dart';
+import 'package:flutter/material.dart';
+
+/// Interactive board: hit-tests taps against arrow paths and reports them.
 class GameBoard extends StatefulWidget {
   final List<ArrowPath> arrows;
   final Grid? grid;
@@ -11,7 +15,10 @@ class GameBoard extends StatefulWidget {
   final VoidCallback onUndo;
   final VoidCallback onHint;
   final ArrowPath? selectedArrow;
-  final Function(ArrowPath) onArrowBlocked;
+  final ValueChanged<ArrowPath> onArrowBlocked;
+
+  /// Id of the arrow the hint should highlight, if any.
+  final String? hintArrowId;
 
   const GameBoard({
     required this.arrows,
@@ -22,101 +29,132 @@ class GameBoard extends StatefulWidget {
     required this.onHint,
     this.selectedArrow,
     required this.onArrowBlocked,
-    Key? key,
-  }) : super(key: key);
+    this.hintArrowId,
+    super.key,
+  });
 
   @override
   State<GameBoard> createState() => _GameBoardState();
 }
 
-class _GameBoardState extends State<GameBoard>
-    with SingleTickerProviderStateMixin {
-  late TapGestureRecognizer _tapRecognizer;
+class _GameBoardState extends State<GameBoard> {
+  static const double _tapSlop = 10.0;
+  static const double _hitTolerance = 18.0;
+
   double _cellSize = 50.0;
   Offset? _tapDownPosition;
-  bool _isDragging = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _tapRecognizer = TapGestureRecognizer()
-      ..onTapDown = _onTapDown
-      ..onTapUp = _onTapUp
-      ..onTapCancel = _onTapCancel
-      ..onTap = _onTap;
-  }
-
-  @override
-  void dispose() {
-    _tapRecognizer.dispose();
-    super.dispose();
-  }
+  ArrowPath? _pressedArrow;
 
   void _onTapDown(TapDownDetails details) {
     _tapDownPosition = details.localPosition;
-    _isDragging = false;
+    _pressedArrow = _findArrowAtPosition(details.localPosition);
   }
 
   void _onTapUp(TapUpDetails details) {
-    if (_tapDownPosition != null) {
-      final dx = details.localPosition.dx - _tapDownPosition!.dx;
-      final dy = details.localPosition.dy - _tapDownPosition!.dy;
-      final distance = sqrt(dx * dx + dy * dy);
-      
-      // If tap was very small, treat as selection
-      if (distance < 10) {
-        _onTap();
-      }
-    }
+    final downPosition = _tapDownPosition;
+    final pressed = _pressedArrow;
     _tapDownPosition = null;
+    _pressedArrow = null;
+
+    if (downPosition == null) return;
+
+    final dx = details.localPosition.dx - downPosition.dx;
+    final dy = details.localPosition.dy - downPosition.dy;
+    final distance = sqrt(dx * dx + dy * dy);
+
+    // A drag away from the press point cancels the tap.
+    if (distance >= _tapSlop) return;
+
+    if (pressed == null) {
+      // Tapped empty space: clear the selection.
+      widget.onArrowSelected(_emptyArrow);
+      return;
+    }
+
+    if (pressed.state == ArrowState.blocked) {
+      widget.onArrowBlocked(pressed);
+      return;
+    }
+
+    if (widget.selectedArrow?.id == pressed.id) {
+      // Second tap on the selected arrow sends it off.
+      widget.onArrowReleased(pressed);
+    } else {
+      widget.onArrowSelected(pressed);
+    }
   }
 
   void _onTapCancel() {
     _tapDownPosition = null;
+    _pressedArrow = null;
   }
 
-  void _onTap() {
-    // Find which arrow was tapped
-    final hitTestResult = _findArrowAtPosition(_tapDownPosition!);
-    if (hitTestResult != null && hitTestResult.id != 'none') {
-      widget.onArrowSelected(hitTestResult);
-    } else {
-      // Deselect if tapping on empty space
-      widget.onArrowSelected(ArrowPath(
-        id: 'none',
-        points: [],
-        direction: Direction.right,
-      ));
-    }
-  }
+  /// Sentinel used to tell the parent "nothing was hit". It never reaches the
+  /// board because its id is not on any level.
+  static final ArrowPath _emptyArrow = ArrowPath(
+    id: 'none',
+    points: const [GridPoint(0, 0), GridPoint(0, 0)],
+    direction: Direction.right,
+  );
 
   ArrowPath? _findArrowAtPosition(Offset position) {
-    // Find the arrow at the given position using hit-testing
     for (final arrow in widget.arrows) {
-      if (arrow.containsPoint(position, 15.0)) {
+      if (arrow.containsPoint(position, _cellSize, tolerance: _hitTolerance)) {
         return arrow;
       }
     }
     return null;
   }
 
+  /// Largest cell size that fits the logical grid inside [constraints].
+  double _cellSizeFor(BoxConstraints constraints) {
+    final grid = widget.grid;
+    if (grid == null) return 50.0;
+
+    final byWidth = constraints.maxWidth / grid.width;
+    final byHeight = constraints.maxHeight / grid.height;
+    return max(8.0, min(byWidth, byHeight));
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Get cell size based on available space
-    final size = MediaQuery.of(context).size;
-    final boardWidth = size.width - 40; // margin
-    final boardHeight = size.height - 200; // account for UI
-    _cellSize = min(boardWidth / 12, boardHeight / 16); // based on typical grid size
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _cellSize = _cellSizeFor(constraints);
+        final grid = widget.grid;
+        final boardWidth = grid == null
+            ? constraints.maxWidth
+            : min(constraints.maxWidth, grid.width * _cellSize);
+        final boardHeight = grid == null
+            ? constraints.maxHeight
+            : min(constraints.maxHeight, grid.height * _cellSize);
 
-    return CustomPaint(
-      painter: ArrowPainter(
-        arrows: widget.arrows,
-        grid: widget.grid,
-        cellSize: _cellSize,
-        showGrid: false,
-        showDots: false,
-      ),
-      size: Size.infinite,
+        return Center(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: _onTapDown,
+            onTapUp: _onTapUp,
+            onTapCancel: _onTapCancel,
+            onLongPress: widget.onHint,
+            child: SizedBox(
+              width: boardWidth,
+              height: boardHeight,
+              child: CustomPaint(
+                painter: ArrowPainter(
+                  arrows: widget.arrows,
+                  grid: grid,
+                  cellSize: _cellSize,
+                  selectedArrowId: widget.selectedArrow?.id,
+                  hintArrowId: widget.hintArrowId,
+                  showGrid: false,
+                  showDots: false,
+                ),
+                size: Size(boardWidth, boardHeight),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

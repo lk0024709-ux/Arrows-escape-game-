@@ -1,329 +1,231 @@
 import 'dart:math';
 
-import 'package:Arrows-escape-game-/lib/geometry/grid_point.dart';
-import 'package:Arrows-escape-game-/lib/geometry/arrow_path.dart';
-import 'package:Arrows-escape-game-/lib/level/level.dart';
-import 'package:Arrows-escape-game-/lib/level/level_solver.dart';
+import '../geometry/arrow_path.dart';
+import '../geometry/grid.dart';
+import '../geometry/grid_point.dart';
+import 'difficulty.dart';
+import 'level.dart';
+import 'level_solver.dart';
 
+/// Deterministic board generator.
+///
+/// Boards are built by reverse generation: arrows are dropped on one at a time
+/// and a candidate is only kept while the board stays solvable. Later arrows
+/// may therefore block earlier ones (real dependencies), while solvability is
+/// never lost. The same (difficulty, seed) pair always yields the same board.
 class LevelGenerator {
-  static int _globalSeed = 12345;
+  /// Whole-board retries before falling back to a hand-made layout.
+  final int maxAttempts;
+
+  /// Candidate positions tried per arrow slot.
+  final int placementAttempts;
+
+  LevelGenerator({this.maxAttempts = 25, this.placementAttempts = 30});
 
   /// Set a global seed for reproducible level generation
+  static int globalSeed = 12345;
+
   static void setSeed(int seed) {
-    _globalSeed = seed;
+    globalSeed = seed;
   }
 
-  /// Generate a level with deterministic results based on seed and difficulty
-  Level generate({required int difficulty, required int seed}) {
+  /// Generate a level with deterministic results based on seed and difficulty.
+  /// Always returns a playable board.
+  Level generate({required DifficultyLevel difficulty, required int seed}) {
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final level = tryGenerate(difficulty: difficulty, seed: seed + attempt);
+      if (level != null) return level;
+    }
+    return fallbackLevel(difficulty: difficulty, seed: seed);
+  }
+
+  /// One attempt at a board, or null when it did not meet the quality bar.
+  Level? tryGenerate({required DifficultyLevel difficulty, required int seed}) {
     final rng = Random(seed);
-    final level = Level(
-      difficulty: _getDifficultyParams(difficulty),
-      seed: seed,
-    );
+    final params = DifficultyParams.forLevel(difficulty, rng);
+    final grid = Grid(width: params.boardWidth, height: params.boardHeight);
+    if (grid.width < 4 || grid.height < 4) return null;
 
-    // Step 1: Create logical grid based on difficulty
-    final grid = _createGridForDifficulty(difficulty, rng);
-    level.grid = grid;
+    final occupied = <String>{};
+    final arrows = <ArrowPath>[];
+    var emptySlots = 0;
 
-    // Step 2: Generate solution order (reverse generation)
-    final solutionSequence = _generateSolutionSequence(difficulty, rng);
-    level.solutionOrder = solutionSequence;
+    for (var slot = 0; slot < params.arrowCount; slot++) {
+      final placed = _placeArrow(
+        id: 'arrow_${seed}_$slot',
+        grid: grid,
+        params: params,
+        rng: rng,
+        occupied: occupied,
+        current: arrows,
+      );
 
-    // Step 3: Place arrows following the reverse generation
-    _placeArrowsReverse(level, solutionSequence, grid, rng);
-
-    // Step 4: Check geometry and collisions
-    if (!_validateLevel(level, rng)) {
-      // Reject and regenerate with sub-seed
-      return LevelGenerator.generate(difficulty: difficulty, seed: seed + 1);
+      if (placed == null) {
+        // Board is getting crowded; stop early rather than spinning.
+        if (++emptySlots >= 3) break;
+        continue;
+      }
+      emptySlots = 0;
+      arrows.add(placed);
+      for (final cell in placed.occupiedCells) {
+        occupied.add('${cell.x},${cell.y}');
+      }
     }
 
-    // Step 5: Run solver and measure difficulty
-    final solver = LevelSolver(level: level);
-    final solution = solver.solve();
-    level.solutionLength = solution.length;
-    level.qualityScore = _calculateQualityScore(solution, level);
+    final minArrows = max(3, (params.arrowCount * 0.6).round());
+    if (arrows.length < minArrows) return null;
 
-    // Step 6: Accept or reject
-    if (!level.isValid) {
-      return LevelGenerator.generate(difficulty: difficulty, seed: seed + 1);
+    final solution = LevelSolver.solveArrows(arrows, grid);
+    if (solution.isEmpty) return null;
+
+    final level = Level(generatorSeed: seed, difficulty: params)
+      ..grid = grid
+      ..arrows = arrows
+      ..solutionOrder = solution
+      ..solutionLength = solution.length;
+
+    _measure(level);
+    return level.isValid ? level : null;
+  }
+
+  /// A sparse, guaranteed-solvable layout used when random generation keeps
+  /// failing. Better a simple board than no board.
+  Level fallbackLevel({required DifficultyLevel difficulty, required int seed}) {
+    final params = DifficultyParams.forLevel(difficulty, Random(seed));
+    final grid = Grid(width: max(6, params.boardWidth), height: max(6, params.boardHeight));
+    final arrows = <ArrowPath>[];
+
+    for (int row = 1; row + 1 < grid.height && arrows.length < 4; row += 3) {
+      final points = <GridPoint>[
+        GridPoint(1, row),
+        GridPoint(2, row),
+        GridPoint(3, row),
+      ];
+      arrows.add(ArrowPath(
+        id: 'fallback_${seed}_$row',
+        points: points,
+        direction: ArrowPath.calculateDirection(points),
+      ));
     }
 
+    final level = Level(generatorSeed: seed, difficulty: params)
+      ..grid = grid
+      ..arrows = arrows
+      ..solutionOrder = List<ArrowPath>.of(arrows)
+      ..solutionLength = arrows.length;
+
+    _measure(level);
     return level;
   }
 
-  DifficultyParams _getDifficultyParams(int difficulty) {
-    switch (difficulty) {
-      case 1: // Easy
-        return DifficultyParams(
-          boardWidth: 8,
-          boardHeight: 10,
-          arrowCount: rng.nextInt(4) + 5, // 5-8
-          maxPathLength: 3,
-          minPathGap: 3.0,
-        );
-      case 2: // Normal
-        return DifficultyParams(
-          boardWidth: 10,
-          boardHeight: 14,
-          arrowCount: rng.nextInt(9) + 10, // 10-18
-          maxPathLength: 4,
-          minPathGap: 2.5,
-        );
-      case 3: // Medium
-        return DifficultyParams(
-          boardWidth: 12,
-          boardHeight: 18,
-          arrowCount: rng.nextInt(16) + 11, // 11-26
-          maxPathLength: 5,
-          minPathGap: 2.0,
-        );
-      case 4: // Hard
-        return DifficultyParams(
-          boardWidth: 14,
-          boardHeight: 20,
-          arrowCount: rng.nextInt(16) + 20, // 20-35
-          maxPathLength: 6,
-          minPathGap: 1.8,
-        );
-      case 5: // Expert
-        return DifficultyParams(
-          boardWidth: 18,
-          boardHeight: 25,
-          arrowCount: rng.nextInt(31) + 30, // 30-60+
-          maxPathLength: 8,
-          minPathGap: 1.5,
-        );
-      default:
-        return DifficultyParams(
-          boardWidth: 10,
-          boardHeight: 14,
-          arrowCount: 10,
-          maxPathLength: 4,
-          minPathGap: 2.5,
-        );
-    }
-  }
-
-  Grid _createGridForDifficulty(int rng, Random random) {
-    // Create invisible construction grid
-    final width = 10 + (rng % 12);
-    final height = 10 + (rng % 15);
-    return Grid(width: width, height: height);
-  }
-
-  List<ArrowPath> _generateSolutionSequence(int difficulty, Random rng) {
-    // Generate a guaranteed solution path using reverse generation
-    // Example: A → C → F → B → D → E
-    final count = rng.nextInt(5) + 2; // 2-6 arrows in solution
-    final directions = [Direction.values..shuffle(rng)];
-
-    final List<ArrowPath> sequence = [];
-    for (int i = 0; i < count; i++) {
-      final path = _createRandomPath(rng, directions[i % directions.length]);
-      sequence.add(path);
-    }
-    return sequence;
-  }
-
-  ArrowPath _createRandomPath(Random rng, Direction preferredDirection) {
-    final pointCount = rng.nextInt(4) + 2; // 2-5 points
-    final points = <GridPoint>[];
-
-    // Start at a random position
-    final startX = rng.nextInt(8) + 1;
-    final startY = rng.nextInt(8) + 1;
-    points.add(GridPoint(startX, startY));
-
-    // Build path with orthogonal segments
-    Direction currentDir = preferredDirection;
-    for (int i = 1; i < pointCount; i++) {
-      // Sometimes change direction
-      if (rng.nextDouble() > 0.5 && i > 1) {
-        // Choose a new perpendicular direction
-        final perp = currentDir == Direction.right || currentDir == Direction.left
-            ? Direction.up
-            : Direction.right;
-        currentDir = perp;
-      }
-
-      // Move 1-2 steps in current direction
-      final steps = rng.nextInt(3) + 1;
-      final last = points.last;
-      int newX = last.x;
-      int newY = last.y;
-
-      if (currentDir == Direction.right) {
-        newX = last.x + steps;
-      } else if (currentDir == Direction.left) {
-        newX = last.x - steps;
-      } else if (currentDir == Direction.up) {
-        newY = last.y - steps;
-      } else if (currentDir == Direction.down) {
-        newY = last.y + steps;
-      }
-
-      points.add(GridPoint(newX, newY));
-    }
-
-    final dir = ArrowPath.calculateDirection(points);
-    return ArrowPath(
-      id: '${DateTime.now().millisecondsSinceEpoch}_$rng',
-      points: points,
-      direction: dir,
-      thickness: 8.0,
-    );
-  }
-
-  /// Reverse level generation: start from empty board, add arrows in reverse order
-  void _placeArrowsReverse(
-      Level level, List<ArrowPath> sequence, Grid grid, Random rng) {
-    // Start with empty board
-    level.arrows = [];
-    level.freeCells = grid.cells.length;
-
-    // Add arrows in reverse order (last solution arrow first)
-    for (int i = sequence.length - 1; i >= 0; i--) {
-      final arrow = sequence[i];
-      // Find a valid position that doesn't block future arrows
-      final validPos = _findValidPosition(arrow, level, grid, rng);
-      if (validPos != null) {
-        arrow.points = validPos;
-        level.arrows.add(arrow);
-        level.freeCells -= _calculatePathOccupancy(arrow);
-      }
-    }
-  }
-
-  List<GridPoint>? _findValidPosition(
-      ArrowPath arrow, Level level, Grid grid, Random rng) {
-    // Try to find a valid position for the arrow
-    final maxAttempts = 50;
-
-    for (int attempt = 0; attempt < maxAttempts; attempt++) {
-      // Generate candidate position
-      final candidate = _generateCandidatePosition(arrow, grid, rng);
-
+  /// Try random candidates for one slot, keeping the first that does not
+  /// overlap an existing arrow and leaves the board solvable.
+  ArrowPath? _placeArrow({
+    required String id,
+    required Grid grid,
+    required DifficultyParams params,
+    required Random rng,
+    required Set<String> occupied,
+    required List<ArrowPath> current,
+  }) {
+    for (var attempt = 0; attempt < placementAttempts; attempt++) {
+      final candidate = _randomArrow(
+        id: id,
+        grid: grid,
+        params: params,
+        rng: rng,
+      );
       if (candidate == null) continue;
 
-      // Check for collisions with existing arrows
-      bool collision = false;
-      for (final existing in level.arrows) {
-        if (_pathsIntersect(existing, ArrowPath(
-          id: '${DateTime.now().millisecondsSinceEpoch}_collision',
-          points: candidate,
-          direction: arrow.direction,
-          thickness: arrow.thickness,
-        ))) {
-          collision = true;
+      final cells = candidate.occupiedCells;
+      var overlaps = false;
+      for (final cell in cells) {
+        if (occupied.contains('${cell.x},${cell.y}')) {
+          overlaps = true;
           break;
         }
       }
+      if (overlaps) continue;
 
-      if (!collision) {
-        // Check escape corridor is clear
-        if (_escapeCorridorClear(candidate, level)) {
-          return candidate;
-        }
-      }
+      final trial = List<ArrowPath>.of(current)..add(candidate);
+      if (LevelSolver.solveArrows(trial, grid).isEmpty) continue;
+
+      return candidate;
     }
-
     return null;
   }
 
-  Offset _generateCandidatePosition(ArrowPath arrow, Grid grid, Random rng) {
-    // Generate a position within the grid bounds
-    final startX = rng.nextInt(grid.width - 3) + 2;
-    final startY = rng.nextInt(grid.height - 3) + 2;
+  /// A random straight or single-bend arrow that fits inside [grid].
+  ArrowPath? _randomArrow({
+    required String id,
+    required Grid grid,
+    required DifficultyParams params,
+    required Random rng,
+  }) {
+    final points = <GridPoint>[
+      GridPoint(rng.nextInt(grid.width), rng.nextInt(grid.height)),
+    ];
 
-    // Build path from this start position
-    final points = <GridPoint>[];
-    points.add(GridPoint(startX, startY));
+    final segments = 1 + rng.nextInt(2); // straight or one bend
+    final maxStep = max(2, params.maxPathLength);
+    var dir = Direction.values[rng.nextInt(Direction.values.length)];
 
-    // Extend path based on arrow direction
-    Direction dir = arrow.direction;
-    for (int i = 1; i < 5; i++) {
-      final last = points.last;
-      int newX = last.x;
-      int newY = last.y;
+    for (int s = 0; s < segments; s++) {
+      if (s > 0) {
+        final horizontal = dir == Direction.left || dir == Direction.right;
+        dir = horizontal
+            ? (rng.nextBool() ? Direction.up : Direction.down)
+            : (rng.nextBool() ? Direction.left : Direction.right);
+      }
 
-      if (dir == Direction.right) newX++;
-      else if (dir == Direction.left) newX--;
-      else if (dir == Direction.up) newY--;
-      else if (dir == Direction.down) newY++;
-
-      if (newX >= 1 && newX <= grid.width - 2 &&
-          newY >= 1 && newY <= grid.height - 2) {
-        points.add(GridPoint(newX, newY));
-      } else {
-        break;
+      final step = ArrowPath.delta(dir);
+      final length = 1 + rng.nextInt(maxStep);
+      for (int i = 0; i < length; i++) {
+        final next = points.last.translate(step.x, step.y);
+        if (!grid.inBoundsPoint(next)) break;
+        points.add(next);
       }
     }
 
-    return points;
+    if (points.length < 2) return null;
+
+    final arrow = ArrowPath(
+      id: id,
+      points: points,
+      direction: ArrowPath.calculateDirection(points),
+    );
+    return arrow.isValidDirection ? arrow : null;
   }
 
-  bool _pathsIntersect(ArrowPath a, ArrowPath b) {
-    // Check if two paths intersect/collide
-    for (final p1 in a.points) {
-      for (final p2 in b.points) {
-        if (p1.x == p2.x && p1.y == p2.y) return true;
-      }
-    }
-    return false;
+  /// Fill in the difficulty measurements used by the quality score.
+  void _measure(Level level) {
+    final grid = level.grid;
+    if (grid == null) return;
+
+    final freeAtStart = LevelSolver.branchingFactor(level.arrows, grid);
+    final totalCells = grid.width * grid.height;
+    final bodyCells =
+        level.arrows.fold<int>(0, (sum, a) => sum + a.occupiedCells.length);
+
+    level.branchingFactor = freeAtStart;
+    level.dependencyComplexity = level.arrows.length - freeAtStart;
+    level.trivialMoves = freeAtStart;
+    level.pathComplexity =
+        level.arrows.fold<int>(0, (sum, a) => sum + a.points.length);
+    level.spatialDensity = totalCells == 0 ? 0.0 : bodyCells / totalCells;
+    level.qualityScore = _qualityScore(level);
   }
 
-  bool _escapeCorridorClear(List<GridPoint> arrowPoints, Level level) {
-    // Check if the escape corridor for an arrow is clear
-    // The arrow is blocked if any active object occupies its forward escape corridor
-    return true; // Simplified for now
-  }
+  /// quality = solutionDepth + dependencyComplexity + branching +
+  /// pathComplexity + spatialDensity - trivialMoves, normalised to 0-100.
+  int _qualityScore(Level level) {
+    final score = level.solutionLength * 1.5 +
+        level.dependencyComplexity * 4 +
+        level.branchingFactor * 1 +
+        level.pathComplexity * 0.5 +
+        level.spatialDensity * 40 -
+        level.trivialMoves * 0.5;
 
-  double _calculatePathOccupancy(ArrowPath arrow) {
-    // Calculate how many cells this path occupies
-    return arrow.points.length.toDouble();
-  }
-
-  int _calculateQualityScore(List<ArrowPath> solution, Level level) {
-    // Calculate puzzle quality score
-    // quality = solutionDepth + dependencyComplexity + branching + pathComplexity + spatialDensity - trivialMoves
-    int score = level.solutionLength;
-    score += level.dependencyComplexity ?? 0;
-    score += level.branchingFactor ?? 0;
-    score += level.pathComplexity ?? 0;
-    score += level.spatialDensity ?? 0;
-    score -= level.trivialMoves ?? 0;
-
-    // Normalize to 0-100
-    return score.clamp(0, 100);
-  }
-
-  bool _validateLevel(Level level, Random rng) {
-    // Validate the generated level passes all checks
-    // Check: inside board, valid path geometry, no illegal overlaps,
-    // valid arrowheads, valid directions, valid dependencies, solvable, reasonable difficulty
-
-    if (level.arrows.isEmpty) return false;
-    if (level.grid == null) return false;
-
-    // Check all arrows have valid geometry
-    for (final arrow in level.arrows) {
-      if (arrow.points.length < 2) return false;
-      if (!arrow.isValidDirection) return false;
-    }
-
-    // Check for overlaps
-    for (int i = 0; i < level.arrows.length; i++) {
-      for (int j = i + 1; j < level.arrows.length; j++) {
-        if (_pathsIntersect(level.arrows[i], level.arrows[j])) return false;
-      }
-    }
-
-    // Check solvability
-    final solver = LevelSolver(level: level);
-    final solution = solver.solve();
-    if (solution.isEmpty) return false;
-
-    return true;
+    return score.round().clamp(0, 100);
   }
 }

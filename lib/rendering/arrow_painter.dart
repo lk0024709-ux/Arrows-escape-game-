@@ -1,22 +1,27 @@
-import 'dart:math';
+import 'package:arrows_escape_game/geometry/arrow_path.dart';
+import 'package:arrows_escape_game/geometry/grid.dart';
+import 'package:flutter/material.dart';
 
-import 'package:flutter/painting.dart';
-import 'package:flutter/widgets.dart';
-
-import 'geometry/arrow_path.dart';
-import 'geometry/grid.dart';
-import 'geometry/grid_point.dart';
-
+/// Paints the guide dots, arrow bodies and arrowheads onto the board canvas.
 class ArrowPainter extends CustomPainter {
+  static const Color background = Colors.white;
+  static const Color guideDot = Color(0xFFD9DEE8);
+  static const Color ink = Color(0xFF07164F);
+  static const Color highlight = Color(0xFF2585FF);
+
   final List<ArrowPath> arrows;
   final Grid? grid;
-  bool showGrid = false;
-  bool showDots = false;
-  double cellSize = 50.0;
+  final String? selectedArrowId;
+  final String? hintArrowId;
+  final bool showGrid;
+  final bool showDots;
+  final double cellSize;
 
   ArrowPainter({
     required this.arrows,
     this.grid,
+    this.selectedArrowId,
+    this.hintArrowId,
     this.showGrid = false,
     this.showDots = false,
     this.cellSize = 50.0,
@@ -30,59 +35,51 @@ class ArrowPainter extends CustomPainter {
     // 2. Draw guide nodes (grey dots) if enabled
     if (showDots) _paintGuideDots(canvas);
 
-    // 3. Draw path shadows
+    // 3. Draw debug geometry if enabled
+    if (showGrid) _paintGrid(canvas);
+
+    // 4. Draw path shadows
     _paintPathShadows(canvas);
 
-    // 4. Draw path bodies and arrowheads
+    // 5. Draw path bodies and arrowheads
     _paintArrowPaths(canvas);
-
-    // 5. Draw selection glow if an arrow is selected
-    // (handled externally)
-
-    // 6. Draw debug geometry if enabled
-    if (showGrid) _paintGrid(canvas);
   }
 
   void _paintBackground(Canvas canvas, Size size) {
-    // White background
-    final backgroundPaint = Paint();
-    backgroundPaint.color = Colors.white;
+    final backgroundPaint = Paint()..color = background;
     canvas.drawRect(Offset.zero & size, backgroundPaint);
   }
 
   void _paintGuideDots(Canvas canvas) {
-    if (grid == null) return;
+    final board = grid;
+    if (board == null) return;
 
-    final dotPaint = Paint();
-    dotPaint.color = Color(0xFFD9DEE8); // Grey guide dot
-    dotPaint.style = PaintingStyle.fill;
+    final dotPaint = Paint()
+      ..color = guideDot
+      ..style = PaintingStyle.fill;
 
-    // Draw dots at grid intersections
-    for (int x = 0; x <= grid!.width; x++) {
-      for (int y = 0; y <= grid!.height; y++) {
-        final offset = Offset(x * cellSize + cellSize / 2, y * cellSize + cellSize / 2);
+    for (int x = 0; x < board.width; x++) {
+      for (int y = 0; y < board.height; y++) {
+        final offset = Offset(
+          x * cellSize + cellSize / 2,
+          y * cellSize + cellSize / 2,
+        );
         canvas.drawCircle(offset, 3, dotPaint);
       }
     }
   }
 
   void _paintPathShadows(Canvas canvas) {
-    for (final arrow in arrows) {
-      _paintArrowShadow(canvas, arrow);
-    }
-  }
-
-  void _paintArrowShadow(Canvas canvas, ArrowPath arrow) {
-    // Draw a subtle shadow for the path
     final shadowPaint = Paint()
       ..color = Colors.black12
       ..style = PaintingStyle.stroke
-      ..strokeWidth = arrow.thickness + 4;
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
 
-    // Draw path with rounded joins
-    if (arrow.points.length >= 2) {
-      final path = _buildPath(arrow);
-      canvas.drawPath(path, shadowPaint);
+    for (final arrow in arrows) {
+      if (arrow.points.length < 2) continue;
+      shadowPaint.strokeWidth = arrow.thickness + 4;
+      canvas.drawPath(_buildPath(arrow), shadowPaint);
     }
   }
 
@@ -95,146 +92,130 @@ class ArrowPainter extends CustomPainter {
   void _paintSingleArrowPath(Canvas canvas, ArrowPath arrow) {
     if (arrow.points.length < 2) return;
 
+    final isSelected = arrow.id == selectedArrowId;
+    final isHinted = arrow.id == hintArrowId;
+    final color = isSelected || isHinted ? highlight : ink;
+
     final paint = Paint()
-      ..color = Color(0xFF07164F) // Dark navy
+      ..color = color
       ..style = PaintingStyle.stroke
       ..strokeWidth = arrow.thickness
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
-    // Build the path
-    final path = _buildPath(arrow);
-    canvas.drawPath(path, paint);
-
-    // Draw the arrowhead
-    _drawArrowhead(canvas, arrow, paint);
+    canvas.drawPath(_buildPath(arrow), paint);
+    _drawArrowhead(canvas, arrow, color);
   }
 
   Path _buildPath(ArrowPath arrow) {
-    if (arrow.points.length < 2) return Path();
-
     final path = Path();
-    final start = arrow.points.first;
-    final startOffset = start.toOffset(cellSize);
+    if (arrow.points.isEmpty) return path;
+
+    final startOffset = arrow.points.first.toOffset(cellSize);
     path.moveTo(startOffset.dx, startOffset.dy);
 
     for (int i = 1; i < arrow.points.length; i++) {
-      final point = arrow.points[i];
-      final offset = point.toOffset(cellSize);
+      final offset = arrow.points[i].toOffset(cellSize);
       path.lineTo(offset.dx, offset.dy);
     }
-
     return path;
   }
 
-  void _drawArrowhead(Canvas canvas, ArrowPath arrow, Paint paint) {
-    if (arrow.points.length < 2) return;
-
-    final start = arrow.points.last;
-    final startOffset = start.toOffset(cellSize);
-    final dir = arrow.direction;
-
-    // Calculate arrowhead size based on thickness
-    final headLength = arrow.thickness * 2.4;
-    final headWidth = arrow.thickness * 1.8;
-
-    // Get the direction we're heading
-    final secondLast = arrow.points.length >= 2 ? arrow.points[arrow.points.length - 2] : start;
-    final secondLastOffset = secondLast.toOffset(cellSize);
-
-    // Determine arrowhead points based on direction
+  void _drawArrowhead(Canvas canvas, ArrowPath arrow, Color color) {
+    final tip = arrow.points.last.toOffset(cellSize);
     final headPoints = _calculateArrowheadPoints(
-      startOffset,
-      secondLastOffset,
-      dir,
-      headLength,
-      headWidth,
+      tip,
+      arrow.direction,
+      arrow.thickness * 2.4,
+      arrow.thickness * 1.8,
     );
+    if (headPoints.length < 3) return;
 
-    // Draw the arrowhead filled triangle
-    final headPaint = Paint()
-      ..color = Color(0xFF07164F)
-      ..style = PaintingStyle.fill;
-
-    if (headPoints.length >= 3) {
-      canvas.drawPolygon(headPoints, headPaint);
+    final head = Path()..moveTo(headPoints.first.dx, headPoints.first.dy);
+    for (final point in headPoints.skip(1)) {
+      head.lineTo(point.dx, point.dy);
     }
+    head.close();
 
-    // Also draw the main path line on top
-    canvas.drawPath(_buildPath(arrow), paint);
+    canvas.drawPath(
+      head,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.fill,
+    );
   }
 
   List<Offset> _calculateArrowheadPoints(
     Offset start,
-    Offset secondLast,
     Direction dir,
     double headLength,
     double headWidth,
   ) {
-    // Calculate based on the direction of the path segment
-    final dx = start.dx - secondLast.dx;
-    final dy = start.dy - secondLast.dy;
-
-    // Normalize direction
-    final isHorizontal = dx.abs() > dy.abs;
-
-    final points = <Offset>[];
+    final halfLength = headLength / 2;
+    final halfWidth = headWidth / 2;
 
     switch (dir) {
       case Direction.right:
-        points.addAll([
-          start, // tip
-          Offset(start.dx - headWidth, start.dy - headLength ~/ 2),
-          Offset(start.dx - headWidth, start.dy + headLength ~/ 2),
-        ]);
-        break;
+        return [
+          start,
+          Offset(start.dx - headLength, start.dy - halfWidth),
+          Offset(start.dx - headLength, start.dy + halfWidth),
+        ];
       case Direction.left:
-        points.addAll([
+        return [
           start,
-          Offset(start.dx + headWidth, start.dy - headLength ~/ 2),
-          Offset(start.dx + headWidth, start.dy + headLength ~/ 2),
-        ]);
-        break;
+          Offset(start.dx + headLength, start.dy - halfWidth),
+          Offset(start.dx + headLength, start.dy + halfWidth),
+        ];
       case Direction.down:
-        points.addAll([
+        return [
           start,
-          Offset(start.dx - headLength ~/ 2, start.dy + headWidth),
-          Offset(start.dx + headLength ~/ 2, start.dy + headWidth),
-        ]);
-        break;
+          Offset(start.dx - halfWidth, start.dy - headLength),
+          Offset(start.dx + halfWidth, start.dy - headLength),
+        ];
       case Direction.up:
-        points.addAll([
+        return [
           start,
-          Offset(start.dx - headLength ~/ 2, start.dy - headWidth),
-          Offset(start.dx + headLength ~/ 2, start.dy - headWidth),
-        ]);
-        break;
+          Offset(start.dx - halfWidth, start.dy + headLength),
+          Offset(start.dx + halfWidth, start.dy + headLength),
+        ];
     }
-
-    return points;
   }
 
   void _paintGrid(Canvas canvas) {
-    if (grid == null) return;
+    final board = grid;
+    if (board == null) return;
 
     final gridPaint = Paint()
       ..color = Colors.black12
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
 
-    for (int x = 0; x <= grid!.width; x++) {
-      final start = Offset(x * cellSize, 0);
-      final end = Offset(x * cellSize, cellSize * grid!.height);
-      canvas.drawLine(start, end, gridPaint);
+    for (int x = 0; x <= board.width; x++) {
+      canvas.drawLine(
+        Offset(x * cellSize, 0),
+        Offset(x * cellSize, cellSize * board.height),
+        gridPaint,
+      );
     }
 
-    for (int y = 0; y <= grid!.height; y++) {
-      final start = Offset(0, y * cellSize);
-      final end = Offset(cellSize * grid!.width, y * cellSize);
-      canvas.drawLine(start, end, gridPaint);
+    for (int y = 0; y <= board.height; y++) {
+      canvas.drawLine(
+        Offset(0, y * cellSize),
+        Offset(cellSize * board.width, y * cellSize),
+        gridPaint,
+      );
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant ArrowPainter oldDelegate) {
+    return oldDelegate.arrows != arrows ||
+        oldDelegate.grid != grid ||
+        oldDelegate.cellSize != cellSize ||
+        oldDelegate.selectedArrowId != selectedArrowId ||
+        oldDelegate.hintArrowId != hintArrowId ||
+        oldDelegate.showGrid != showGrid ||
+        oldDelegate.showDots != showDots;
+  }
 }
