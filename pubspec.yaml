@@ -1,0 +1,24 @@
+name: arrows_escape
+description: >-
+  ARROWS ESCAPE — a procedural arrow-labyrinth puzzle game with deterministic
+  level generation, a shared physics/solver core and a reference-style UI.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.3.3
+
+dev_dependencies:
+  flutter:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
