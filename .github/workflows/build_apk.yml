@@ -5,44 +5,38 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Isse aap GitHub UI se manually bhi run kar sakte hain
+  workflow_dispatch:
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Code checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java setup (Android build ke liye zaroori)
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      # 3. Flutter SDK setup
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
-      # 4. Dependencies install
       - name: Install dependencies
         run: flutter pub get
 
-      # 5. Icons generate (agar configured hai)
       - name: Run Launcher Icons generator
         run: dart run flutter_launcher_icons
+        continue-on-error: true
 
-      # 6. Android Release APK build
       - name: Build Android APK
         run: flutter build apk --release
 
-      # 7. APK upload taaki aap GitHub se direct download kar sakein
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
